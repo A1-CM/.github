@@ -68,7 +68,7 @@ jobs:
           path: toolkit
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          php-version: ${{ vars.PHP_VERSION || '8.3' }}
           extensions: mbstring, fileinfo, openssl, pdo_sqlite, sqlite3, pdo_mysql
           tools: composer:v2
       - uses: actions/setup-node@v4
