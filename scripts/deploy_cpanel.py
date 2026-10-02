@@ -97,8 +97,16 @@ def request(url: str, *, data: bytes | None = None, headers: dict | None = None)
         with urllib.request.urlopen(req, timeout=180) as response:
             return response.read()
     except urllib.error.HTTPError as exc:
-        # API responses can contain sensitive server paths; avoid printing full bodies.
-        raise RuntimeError(f"HTTP {exc.code} from {urllib.parse.urlparse(url).hostname}") from exc
+        # Keep query parameters, response bodies, and authentication headers out of logs.
+        parsed = urllib.parse.urlsplit(url)
+        endpoint = f"{parsed.hostname}:{parsed.port or 443}{parsed.path}"
+        hint = (
+            " Check that CPANEL_API_TOKEN is a cPanel token for CPANEL_USERNAME "
+            "and that CPANEL_HOST is the cPanel server hostname."
+            if exc.code == 403 and parsed.path.startswith(("/execute/", "/json-api/"))
+            else ""
+        )
+        raise RuntimeError(f"HTTP {exc.code} at {endpoint}.{hint}") from exc
 
 
 def upload(base: str, user: str, token: str, directory: str, name: str, payload: bytes) -> None:
@@ -331,8 +339,11 @@ def main() -> None:
         raise ValueError("Invalid release ID")
     base = f"https://{host}:2083"
     selected = os.environ.get("CPANEL_PUBLIC_DIR", "auto").strip()
-    public = (discover_public(base, user, token, home, domain, project) if selected in ("", "auto")
-              else safe_public_dir(home, selected, project))
+    if selected in ("", "auto"):
+        print(f"Checking cPanel API and discovering document root for {domain}", flush=True)
+        public = discover_public(base, user, token, home, domain, project)
+    else:
+        public = safe_public_dir(home, selected, project)
     release_path = home + f"/{project}-app/releases/" + release
     shared = home + f"/{project}-app/shared"
     archive = make_archive(release, shared, project)
