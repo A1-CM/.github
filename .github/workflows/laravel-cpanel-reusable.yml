@@ -1,0 +1,125 @@
+name: Reusable Laravel cPanel deployment
+
+on:
+  workflow_call:
+    inputs:
+      project_slug:
+        description: Lowercase project identifier, unique within the cPanel account
+        required: true
+        type: string
+      app_url:
+        description: HTTPS origin of the site
+        required: true
+        type: string
+      project_name:
+        required: false
+        type: string
+      public_dir:
+        description: auto or a directory relative to cPanel home
+        default: auto
+        type: string
+      cpanel_domain:
+        description: Hosted domain for document-root lookup and no-reply mailbox
+        required: false
+        type: string
+      allow_index_replace:
+        description: Permit replacement of an unrelated index.php in the selected document root
+        default: false
+        type: boolean
+      toolkit_repository:
+        description: Repository holding scripts/deploy_cpanel.py and scripts/cpanel_activate.php; defaults to caller repository
+        required: false
+        type: string
+      toolkit_ref:
+        description: Branch or tag of the deployment toolkit
+        default: main
+        type: string
+    secrets:
+      CPANEL_API_TOKEN:
+        required: true
+      TOOLKIT_READ_TOKEN:
+        required: false
+      GROQ_API_KEY:
+        required: false
+      APP_ENV_EXTRA:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: cpanel-${{ inputs.project_slug }}-${{ inputs.app_url }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out Laravel application
+        uses: actions/checkout@v4
+        with:
+          path: app
+      - name: Check out deployment toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.toolkit_repository || github.repository }}
+          ref: ${{ inputs.toolkit_repository && inputs.toolkit_ref || github.sha }}
+          token: ${{ secrets.TOOLKIT_READ_TOKEN || github.token }}
+          path: toolkit
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, fileinfo, openssl, pdo_sqlite, sqlite3, pdo_mysql
+          tools: composer:v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install and test application
+        working-directory: app
+        run: |
+          composer install --prefer-dist --no-interaction --no-progress
+          if [ -f .env.example ]; then cp .env.example .env; else touch .env; fi
+          php artisan key:generate --force
+          php artisan test
+      - name: Verify deployment toolkit
+        working-directory: toolkit
+        env:
+          PROJECT_ROOT: ${{ github.workspace }}/app
+        run: python3 -m unittest discover -s scripts/tests -q
+      - name: Build browser assets
+        working-directory: app
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+            npm run build
+          elif [ -f package.json ]; then
+            npm install --no-audit --no-fund
+            npm run build
+          fi
+      - name: Prepare production dependencies
+        working-directory: app
+        run: composer install --no-dev --prefer-dist --no-interaction --no-progress --classmap-authoritative
+      - name: Deploy through cPanel API
+        env:
+          PROJECT_ROOT: ${{ github.workspace }}/app
+          CPANEL_HOST: ${{ vars.CPANEL_HOST }}
+          CPANEL_USERNAME: ${{ vars.CPANEL_USERNAME }}
+          CPANEL_HOME: ${{ vars.CPANEL_HOME }}
+          CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
+          PROJECT_SLUG: ${{ inputs.project_slug }}
+          PROJECT_NAME: ${{ inputs.project_name || inputs.project_slug }}
+          APP_URL: ${{ inputs.app_url }}
+          CPANEL_DOMAIN: ${{ inputs.cpanel_domain }}
+          CPANEL_PUBLIC_DIR: ${{ inputs.public_dir }}
+          CPANEL_ALLOW_INDEX_REPLACE: ${{ inputs.allow_index_replace }}
+          CPANEL_DB_NAME: ${{ vars.CPANEL_DB_NAME }}
+          CPANEL_DB_USER: ${{ vars.CPANEL_DB_USER }}
+          DB_HOST: ${{ vars.DB_HOST }}
+          DB_PORT: ${{ vars.DB_PORT }}
+          MAIL_HOST: ${{ vars.MAIL_HOST }}
+          MAIL_PORT: ${{ vars.MAIL_PORT }}
+          MAIL_SCHEME: ${{ vars.MAIL_SCHEME }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL }}
+          APP_ENV_EXTRA: ${{ secrets.APP_ENV_EXTRA }}
+        run: python3 toolkit/scripts/deploy_cpanel.py
