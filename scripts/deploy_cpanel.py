@@ -12,7 +12,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.parse
-import urllib.request
+import requests
 import zipfile
 from pathlib import Path
 
@@ -92,21 +92,28 @@ def build_env(shared: str, domain: str, state: dict) -> str:
 
 
 def request(url: str, *, data: bytes | None = None, headers: dict | None = None) -> bytes:
-    req = urllib.request.Request(url, data=data, headers=headers or {}, method="POST" if data is not None else "GET")
+    # Match the requests client used by the verified local cPanel script.
+    # TLS verification remains enabled; never print response bodies or secrets.
     try:
-        with urllib.request.urlopen(req, timeout=180) as response:
-            return response.read()
-    except urllib.error.HTTPError as exc:
-        # Keep query parameters, response bodies, and authentication headers out of logs.
+        response = requests.request(
+            "POST" if data is not None else "GET",
+            url,
+            data=data,
+            headers=headers or {},
+            timeout=180,
+            verify=True,
+        )
+        response.raise_for_status()
+        return response.content
+    except requests.exceptions.HTTPError as exc:
+        parsed = urllib.parse.urlsplit(url)
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        endpoint = f"{parsed.hostname}:{parsed.port or 443}{parsed.path}"
+        raise RuntimeError(f"HTTP {status} at {endpoint}") from exc
+    except requests.exceptions.RequestException as exc:
         parsed = urllib.parse.urlsplit(url)
         endpoint = f"{parsed.hostname}:{parsed.port or 443}{parsed.path}"
-        hint = (
-            " Check that CPANEL_API_TOKEN is a cPanel token for CPANEL_USERNAME "
-            "and that CPANEL_HOST is the cPanel server hostname."
-            if exc.code == 403 and parsed.path.startswith(("/execute/", "/json-api/"))
-            else ""
-        )
-        raise RuntimeError(f"HTTP {exc.code} at {endpoint}.{hint}") from exc
+        raise RuntimeError(f"Connection failed at {endpoint}: {type(exc).__name__}") from exc
 
 
 def upload(base: str, user: str, token: str, directory: str, name: str, payload: bytes) -> None:

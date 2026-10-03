@@ -99,45 +99,8 @@ jobs:
       - name: Prepare production dependencies
         working-directory: app
         run: composer install --no-dev --prefer-dist --no-interaction --no-progress --classmap-authoritative
-      - name: Diagnose cPanel API access
-        env:
-          CPANEL_HOST: ${{ vars.CPANEL_HOST }}
-          CPANEL_USERNAME: ${{ vars.CPANEL_USERNAME }}
-          CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
-          APP_URL: ${{ vars.APP_URL }}
-        run: |
-          python3 - <<'PY'
-          import os
-          import urllib.error
-          import urllib.parse
-          import urllib.request
-
-          host = os.environ["CPANEL_HOST"]
-          domain = urllib.parse.urlsplit(os.environ["APP_URL"]).hostname
-          auth = f'cpanel {os.environ["CPANEL_USERNAME"]}:{os.environ["CPANEL_API_TOKEN"]}'
-
-          paths = {
-              "Basic API access": "/execute/Variables/get_session_information",
-              "Domain lookup": "/execute/DomainInfo/single_domain_data?"
-                  + urllib.parse.urlencode({"domain": domain}),
-          }
-
-          for label, path in paths.items():
-              request = urllib.request.Request(
-                  f"https://{host}:2083{path}",
-                  headers={"Authorization": auth},
-              )
-              try:
-                  with urllib.request.urlopen(request, timeout=30) as response:
-                      print(f"{label}: HTTP {response.status}")
-              except urllib.error.HTTPError as error:
-                  print(
-                      f"{label}: HTTP {error.code}; "
-                      f"server={error.headers.get('Server', 'unknown')}; "
-                      f"cf-error-type={error.headers.get('cf-error-type', 'none')}; "
-                      f"cf-ray={error.headers.get('cf-ray', 'none')}"
-                  )
-          PY
+      - name: Install deployment client
+        run: python3 -m pip install requests
       - name: Deploy through cPanel API
         env:
           PROJECT_ROOT: ${{ github.workspace }}/app
