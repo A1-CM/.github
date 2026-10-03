@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -133,16 +134,26 @@ def upload(base: str, user: str, token: str, directory: str, name: str, payload:
         raise RuntimeError("cPanel upload failed: " + str(answer.get("errors") or answer.get("messages")))
 
 
-def extract(base: str, user: str, token: str, archive: str) -> None:
+def extract(base: str, user: str, token: str, archive: str, home: str) -> None:
+    # Tell cPanel exactly which ZIP to extract and where. The ZIP itself contains
+    # only the project's private release prefix, never a public_html path.
+    archive_path = home.rstrip("/") + "/" + archive
     query = urllib.parse.urlencode({
         "cpanel_jsonapi_user": user, "cpanel_jsonapi_apiversion": "2",
         "cpanel_jsonapi_module": "Fileman", "cpanel_jsonapi_func": "fileop",
-        "op": "extract", "sourcefiles": archive, "doubledecode": "1",
+        "op": "extract", "sourcefiles": archive_path,
+        "destfiles": home, "doubledecode": "1",
     })
     raw = request(base + "/json-api/cpanel?" + query, headers={"Authorization": f"cpanel {user}:{token}"})
     result = json.loads(raw).get("cpanelresult", {})
-    if result.get("event", {}).get("result") != 1 or any(item.get("result") != 1 for item in result.get("data", [])):
-        raise RuntimeError("cPanel archive extraction failed: " + str(result.get("data", [])))
+    entries = result.get("data")
+    if (result.get("event", {}).get("result") != 1
+            or not isinstance(entries, list) or not entries
+            or any(not isinstance(item, dict) or item.get("result") != 1 or item.get("err") for item in entries)):
+        raise RuntimeError("cPanel archive extraction failed or returned no file operation result")
+    destination = entries[0].get("dest")
+    if isinstance(destination, str) and destination not in (home, home.rstrip("/") + "/", "~"):
+        raise RuntimeError("cPanel extracted the archive to an unexpected destination")
 
 
 def make_archive(release: str, shared: str, project: str) -> bytes:
@@ -168,6 +179,19 @@ def make_archive(release: str, shared: str, project: str) -> bytes:
                     out.write(file, prefix + relative)
             out.writestr(prefix + "bootstrap/shared_storage.php", "<?php return " + repr_php(shared + "/storage") + ";\n")
         return Path(temp.name).read_bytes()
+
+
+def verify_remote_autoload(base: str, user: str, token: str, release_path: str) -> None:
+    directory = release_path + "/vendor"
+    listing = uapi(base, user, token, "Fileman", "list_files", {
+        "dir": directory, "only_these_files": "autoload.php", "types": "file",
+    })
+    entries = listing if isinstance(listing, list) else listing.get("files", []) if isinstance(listing, dict) else []
+    if not any(isinstance(item, dict) and item.get("file") == "autoload.php" for item in entries):
+        raise RuntimeError(
+            "Archive extraction did not put vendor/autoload.php in the private release. "
+            "Check the extracted release and ZIP in cPanel File Manager; activation was not attempted."
+        )
 
 
 def repr_php(value: str) -> str:
@@ -354,6 +378,10 @@ def main() -> None:
     release_path = home + f"/{project}-app/releases/" + release
     shared = home + f"/{project}-app/shared"
     archive = make_archive(release, shared, project)
+    expected_autoload = f"{project}-app/releases/{release}/vendor/autoload.php"
+    with zipfile.ZipFile(io.BytesIO(archive)) as package:
+        if expected_autoload not in package.namelist():
+            raise RuntimeError("Build archive is missing vendor/autoload.php")
     state = prepare_state(base, user, token, home, project, domain)
     provision(base, user, token, state)
     hook_token = secrets.token_urlsafe(48)
@@ -363,7 +391,9 @@ def main() -> None:
     print(f"Uploading release {release} ({len(archive) // 1024 // 1024} MiB) to private home directory")
     upload(base, user, token, home, archive_name, archive)
     print("Extracting release through cPanel File Manager API")
-    extract(base, user, token, archive_name)
+    extract(base, user, token, archive_name, home)
+    print("Verifying Composer autoloader in extracted release")
+    verify_remote_autoload(base, user, token, release_path)
     print("Uploading private production configuration")
     upload(base, user, token, release_path, ".env", production_env.encode())
     upload(base, user, token, release_path, "deploy_auth.php", ("<?php return " + repr_php(hook_token) + ";\n").encode())
