@@ -30,6 +30,19 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Health check failed'):
                 deploy.health_check('https://example.com')
 
+    def test_finalize_failure_restores_uncommitted_switch(self):
+        with patch.object(deploy, 'manager_call', side_effect=[RuntimeError('finalize failed'),
+                                                               {'restored': True, 'finalized': False}]) as call:
+            with self.assertRaisesRegex(RuntimeError, 'previous live files were restored'):
+                deploy.finalize_or_recover('base', 'user', 'token', {'release': 'target'})
+        self.assertEqual([item.args[3]['action'] for item in call.call_args_list], ['finalize', 'restore'])
+
+    def test_finalize_response_loss_keeps_committed_release(self):
+        with patch.object(deploy, 'manager_call', side_effect=[RuntimeError('response lost'),
+                                                               {'restored': False, 'finalized': True}]):
+            result = deploy.finalize_or_recover('base', 'user', 'token', {'release': 'target'})
+        self.assertIn('committed', result['warnings'][0])
+
     def test_generated_env_preserves_special_password_characters(self):
         password = 'a${APP_NAME}$b"\\tail#'
         with tempfile.TemporaryDirectory() as temp:

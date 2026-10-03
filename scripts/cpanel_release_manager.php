@@ -162,7 +162,7 @@ function historyPath(array $config): string
     return sharedRoot($config).'/deployment-history.json';
 }
 
-function history(array $config): array
+function history(array $config, bool $allowLegacyImport): array
 {
     $path = historyPath($config);
     $actual = activeRelease($config);
@@ -178,6 +178,9 @@ function history(array $config): array
             throw new RuntimeException('Deployment history disagrees with the live entry point');
         }
         return $data;
+    }
+    if (!$allowLegacyImport) {
+        throw new RuntimeException('Deployment history is missing; rollback is unavailable');
     }
     // Import only complete legacy releases. Incomplete failed uploads are never
     // offered as rollback targets and are removed after a later healthy deploy.
@@ -217,7 +220,7 @@ function writeAtomic(string $path, string $content): void
 
 function beginSwitch(array $config, bool $rollback): array
 {
-    $state = history($config);
+    $state = history($config, !$rollback);
     $previous = $state['active'];
     if ($rollback) {
         $steps = (int) ($config['steps_back'] ?? 0);
@@ -424,9 +427,19 @@ function restoreSwitch(array $config): array
     $pending = pendingPath($config);
     $manifestFile = $pending.'/manifest.json';
     if (!is_file($manifestFile)) {
-        return ['restored' => false];
+        return ['restored' => false, 'finalized' => committedRelease($config, $config['release'] ?? '')];
     }
     $manifest = json_decode((string) file_get_contents($manifestFile), true, 512, JSON_THROW_ON_ERROR);
+    if (committedRelease($config, $manifest['target'])) {
+        return ['restored' => false, 'finalized' => true];
+    }
+    $historyFile = historyPath($config);
+    if (is_file($historyFile)) {
+        $state = json_decode((string) file_get_contents($historyFile), true, 512, JSON_THROW_ON_ERROR);
+        if (($state['active'] ?? null) !== $manifest['previous']) {
+            throw new RuntimeException('Deployment history changed during recovery');
+        }
+    }
     foreach (array_reverse($manifest['files'], true) as $relative => $record) {
         $destination = safePublicPath($config, $relative);
         $current = is_file($destination) ? hash_file('sha256', $destination) : null;
@@ -450,7 +463,17 @@ function restoreSwitch(array $config): array
         }
     }
     removeTree($pending);
-    return ['restored' => true, 'release' => $manifest['previous']];
+    return ['restored' => true, 'finalized' => false, 'release' => $manifest['previous']];
+}
+
+function committedRelease(array $config, string $target): bool
+{
+    $path = historyPath($config);
+    if (!releaseId($target) || !is_file($path) || is_link($path)) {
+        return false;
+    }
+    $state = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+    return ($state['active'] ?? null) === $target && activeRelease($config) === $target;
 }
 
 function finalizeSwitch(array $config): array

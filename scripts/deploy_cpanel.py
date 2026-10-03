@@ -433,6 +433,22 @@ def health_check(site_url: str) -> None:
     raise RuntimeError(f"Health check failed at {path}")
 
 
+def finalize_or_recover(base: str, user: str, token: str, config: dict,
+                        sensitive: tuple[str, ...] = ()) -> dict:
+    try:
+        return manager_call(base, user, token, {**config, "action": "finalize"}, sensitive)
+    except Exception as error:
+        try:
+            recovery = manager_call(base, user, token, {**config, "action": "restore"}, sensitive)
+        except Exception as recovery_error:
+            raise RuntimeError(f"Finalization failed and recovery status is unknown: {recovery_error}") from error
+        if recovery.get("finalized"):
+            return {"warnings": ["Finalization response failed after the release was committed; cleanup may be incomplete"]}
+        if recovery.get("restored"):
+            raise RuntimeError("Finalization failed; previous live files were restored") from error
+        raise RuntimeError("Finalization failed and no pending backup was found; verify the live release") from error
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Deploy or roll back a Laravel release via cPanel")
     parser.add_argument("--rollback", type=int, metavar="STEPS", help="roll back 1-7 prior activations")
@@ -481,7 +497,8 @@ def main() -> None:
             except Exception as restore_error:
                 raise RuntimeError(f"Rollback failed and recovery also failed: {restore_error}") from error
             raise
-        result = manager_call(base, user, token, {**common, "action": "finalize", "release": ""})
+        common["release"] = answer["release"]
+        result = finalize_or_recover(base, user, token, common)
         print(f"Rolled back to {answer['release']} at {site_url}")
         for warning in result.get("warnings", []):
             print(f"Cleanup warning: {warning}", file=sys.stderr)
@@ -520,7 +537,7 @@ def main() -> None:
         except Exception as restore_error:
             raise RuntimeError(f"Deployment failed and recovery also failed: {restore_error}") from error
         raise
-    result = manager_call(base, user, token, {**common, "action": "finalize"}, sensitive)
+    result = finalize_or_recover(base, user, token, common, sensitive)
     print(f"Activated {release} at {site_url}")
     for warning in result.get("warnings", []):
         print(f"Cleanup warning: {warning}", file=sys.stderr)

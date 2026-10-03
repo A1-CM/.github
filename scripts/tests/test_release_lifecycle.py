@@ -170,7 +170,7 @@ return new class {
         self.assertNotIn(incomplete.name, history['previous'])
         self.assertFalse(incomplete.exists())
 
-    def test_imports_complete_legacy_releases_and_rejects_corrupt_history(self):
+    def test_missing_history_blocks_rollback_but_deploy_imports_legacy_releases(self):
         active = self.release(2, 'active')
         answer, op = self.action('activate', release=active)
         self.assertTrue(answer['ok'], answer)
@@ -181,16 +181,64 @@ return new class {
         older = self.release(1, 'older')
         incomplete = self.releases / '000000000003-3-1'
         incomplete.mkdir()
-        answer, op = self.action('rollback', steps_back=1)
+        answer, _ = self.action('rollback', steps_back=1)
+        self.assertFalse(answer['ok'], answer)
+        self.assertIn('history is missing', answer['error'])
+        self.assertEqual(self.public.joinpath('images/brand.txt').read_text(), 'active')
+
+        newer = self.release(4, 'newer')
+        answer, op = self.action('activate', release=newer)
         self.assertTrue(answer['ok'], answer)
-        self.assertEqual(answer['release'], older)
         answer, _ = self.action('finalize', operation=op)
         self.assertTrue(answer['ok'], answer)
+        history = json.loads(history_file.read_text())
+        self.assertEqual(history['active'], newer)
+        self.assertIn(active, history['previous'])
+        self.assertIn(older, history['previous'])
         self.assertFalse(incomplete.exists())
         history_file.write_text('invalid json')
         answer, _ = self.action('rollback', steps_back=1)
         self.assertFalse(answer['ok'], answer)
-        self.assertEqual(self.public.joinpath('images/brand.txt').read_text(), 'older')
+        self.assertEqual(self.public.joinpath('images/brand.txt').read_text(), 'newer')
+
+    def test_committed_release_cannot_be_restored_after_finalize(self):
+        previous = self.release(1, 'previous')
+        answer, op = self.action('activate', release=previous)
+        self.assertTrue(answer['ok'], answer)
+        answer, _ = self.action('finalize', operation=op)
+        self.assertTrue(answer['ok'], answer)
+        current = self.release(2, 'current')
+        answer, op = self.action('activate', release=current)
+        self.assertTrue(answer['ok'], answer)
+        answer, _ = self.action('finalize', operation=op)
+        self.assertTrue(answer['ok'], answer)
+        answer, _ = self.action('restore', operation=op, release=current)
+        self.assertTrue(answer['ok'], answer)
+        self.assertFalse(answer['restored'])
+        self.assertTrue(answer['finalized'])
+        self.assertEqual(self.public.joinpath('images/brand.txt').read_text(), 'current')
+        self.assertEqual(json.loads(self.shared.joinpath('deployment-history.json').read_text())['active'], current)
+
+    def test_committed_history_blocks_restore_with_pending_backup(self):
+        previous = self.release(1, 'previous')
+        answer, op = self.action('activate', release=previous)
+        self.assertTrue(answer['ok'], answer)
+        answer, _ = self.action('finalize', operation=op)
+        self.assertTrue(answer['ok'], answer)
+        current = self.release(2, 'current')
+        answer, op = self.action('activate', release=current)
+        self.assertTrue(answer['ok'], answer)
+        history_file = self.shared / 'deployment-history.json'
+        history = json.loads(history_file.read_text())
+        history['active'] = current
+        history['previous'] = [previous]
+        history_file.write_text(json.dumps(history))
+        answer, _ = self.action('restore', operation=op, release=current)
+        self.assertTrue(answer['ok'], answer)
+        self.assertFalse(answer['restored'])
+        self.assertTrue(answer['finalized'])
+        self.assertEqual(self.public.joinpath('images/brand.txt').read_text(), 'current')
+        self.assertTrue((self.shared / 'deploy-pending' / op / 'manifest.json').exists())
 
     def test_cleanup_skips_symlink_release(self):
         active = self.release(1)

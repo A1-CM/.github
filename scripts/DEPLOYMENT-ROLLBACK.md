@@ -5,7 +5,7 @@ This local copy is based on the public `A1-CM/.github` `v1.0.7` toolkit. Publish
 ## Deployment behavior
 
 - The app remains in `<CPANEL_HOME>/<project>-app/releases/<release>`. `public_html` contains the managed Laravel entry point and public assets. Shared storage and `deployment-history.json` remain under `<project>-app/shared`.
-- After activation, the runner checks the configured `health_path` (default `/up`) three times. A failure invokes the restore endpoint, which puts the previous entry point, routing rules, and overwritten public files back. Database migrations are **not** reversed.
+- After activation, the runner checks the configured `health_path` (default `/up`) three times. A health or pre-commit finalization failure restores the previous entry point, routing rules, and overwritten public files. If the finalization response is lost after history is committed, recovery preserves the new release and warns that cleanup may be incomplete. Database migrations are **not** reversed.
 - After a healthy activation, the toolkit records the new active release and at most seven previous releases. It deletes only matching project staging ZIPs in `CPANEL_HOME` and strict release-ID directories beyond that set. Failed releases and ZIPs remain until a later healthy deployment.
 - The first updated run imports the current managed release and up to seven complete older releases. Incomplete releases are excluded from rollback and pruned after the healthy deployment.
 - The deployer asks cPanel for other domain document roots and rejects public files that would enter a nested addon domain root. Rollback reuses this protection. Domains that share exactly the same document root intentionally share its public entry point; review those in cPanel before deployment.
@@ -23,4 +23,4 @@ The reusable rollback workflow needs `CPANEL_HOST`, `CPANEL_USERNAME`, `CPANEL_H
 3. Publish immutable toolkit tag `v1.0.8` after staging passes.
 4. Publish this repository's `.github/workflows/deploy-cpanel.yml` and `.github/workflows/rollback-cpanel.yml`, both pinned to `v1.0.8`.
 
-The LogicStrand workflow files are prepared locally now but must be published only after the toolkit tag exists. The deployment history is private and file permissions are restricted. A missing or corrupt history file stops rollback rather than guessing a release. The cPanel API token and generated application credentials are never printed in workflow output.
+The LogicStrand workflow files are prepared locally now but must be published only after the toolkit tag exists. The deployment history is private and file permissions are restricted. A missing or corrupt history file stops manual rollback rather than guessing a release. The first updated deployment can import complete legacy releases before it writes history. The cPanel API token and generated application credentials are never printed in workflow output.
