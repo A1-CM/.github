@@ -417,8 +417,13 @@ def main() -> None:
         try:
             answer = response.json()
         except ValueError as exc:
+            content_type = response.headers.get("Content-Type", "unknown").split(";", 1)[0]
+            server = response.headers.get("Server", "unknown")
+            ray = response.headers.get("CF-Ray", "none")
             raise RuntimeError(
-                f"Activation returned HTTP {response.status_code} without a JSON response"
+                f"Activation returned HTTP {response.status_code} without JSON "
+                f"(content-type={content_type}, server={server}, "
+                f"cf-ray={ray}, body-bytes={len(response.content)})"
             ) from exc
         if not isinstance(answer, dict):
             raise RuntimeError(
