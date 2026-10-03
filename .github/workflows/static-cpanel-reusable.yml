@@ -1,0 +1,109 @@
+name: Reusable static cPanel deployment
+
+on:
+  workflow_call:
+    inputs:
+      project_slug:
+        description: Lowercase project identifier, unique within the cPanel account
+        required: true
+        type: string
+      app_url:
+        description: HTTPS origin of the site
+        required: true
+        type: string
+      output_dir:
+        description: Built output directory relative to repository root, or auto to detect dist or out
+        default: auto
+        type: string
+      routing_mode:
+        description: auto, next, spa, or files
+        default: auto
+        type: string
+      public_dir:
+        description: auto or a directory relative to cPanel home
+        default: auto
+        type: string
+      cpanel_domain:
+        description: Hosted domain for document-root lookup
+        required: false
+        type: string
+      allow_index_replace:
+        description: Permit replacement of an unrelated index.html
+        default: false
+        type: boolean
+      health_path:
+        description: Path that must return HTTP 200 after activation; defaults to /
+        default: /
+        type: string
+      node_version:
+        default: '22'
+        type: string
+      toolkit_repository:
+        description: Repository holding the cPanel deployment scripts
+        required: false
+        type: string
+      toolkit_ref:
+        description: Reviewed tag or commit of the deployment toolkit
+        default: main
+        type: string
+    secrets:
+      CPANEL_API_TOKEN:
+        required: true
+      TOOLKIT_READ_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: cpanel-${{ inputs.project_slug }}-${{ inputs.app_url }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out site
+        uses: actions/checkout@v4
+        with:
+          path: app
+      - name: Check out deployment toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.toolkit_repository || github.repository }}
+          ref: ${{ inputs.toolkit_repository && inputs.toolkit_ref || github.sha }}
+          token: ${{ secrets.TOOLKIT_READ_TOKEN || github.token }}
+          path: toolkit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+      - name: Build static site
+        working-directory: app
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+          npm run build
+      - name: Install deployment client
+        run: python3 -m pip install requests
+      - name: Verify static deployment toolkit
+        working-directory: toolkit
+        run: python3 -m unittest scripts.tests.test_static_cpanel -q
+      - name: Deploy static site through cPanel API
+        env:
+          PROJECT_ROOT: ${{ github.workspace }}/app
+          CPANEL_HOST: ${{ vars.CPANEL_HOST }}
+          CPANEL_USERNAME: ${{ vars.CPANEL_USERNAME }}
+          CPANEL_HOME: ${{ vars.CPANEL_HOME }}
+          CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
+          PROJECT_SLUG: ${{ inputs.project_slug }}
+          APP_URL: ${{ inputs.app_url }}
+          CPANEL_DOMAIN: ${{ inputs.cpanel_domain }}
+          CPANEL_PUBLIC_DIR: ${{ inputs.public_dir }}
+          CPANEL_ALLOW_INDEX_REPLACE: ${{ inputs.allow_index_replace }}
+          CPANEL_HEALTH_PATH: ${{ inputs.health_path }}
+          STATIC_OUTPUT_DIR: ${{ inputs.output_dir }}
+          STATIC_ROUTING_MODE: ${{ inputs.routing_mode }}
+        run: python3 toolkit/scripts/deploy_static_cpanel.py

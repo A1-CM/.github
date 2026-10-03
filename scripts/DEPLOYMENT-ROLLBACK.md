@@ -1,6 +1,6 @@
 # cPanel release cleanup and rollback
 
-This local copy is based on the public `A1-CM/.github` `v1.0.7` toolkit. Publish its changed workflow and `scripts/` files to that repository as a new immutable tag before publishing the LogicStrand caller workflows that reference `v1.0.8`. No remote repository or cPanel account is changed by this workspace.
+The shared `A1-CM/.github` toolkit provides cPanel deployment and rollback without shell access. LogicStrand caller workflows reference immutable toolkit tag `v1.0.8`; publish that tag before publishing the callers. A live cPanel deployment is a separate operation.
 
 ## Deployment behavior
 
@@ -12,15 +12,13 @@ This local copy is based on the public `A1-CM/.github` `v1.0.7` toolkit. Publish
 
 ## Manual rollback
 
-Run the repository's **Roll back LogicStrand on cPanel** action and enter `steps_back` from `1` to `7`. `1` restores the most recently active earlier release. A completed rollback places the release it replaced first in history, so another `steps_back=1` can return to it. The action checks `/up` and restores the prior live files if that check fails.
+Run the LogicStrand repository's **Roll back LogicStrand on cPanel** action and enter `steps_back` from `1` to `7`. `1` restores the most recently active earlier release. A completed rollback places the release it replaced first in history, so another `steps_back=1` can return to it. The action checks `/up` and restores the prior live files if that check fails.
 
 The reusable rollback workflow needs `CPANEL_HOST`, `CPANEL_USERNAME`, `CPANEL_HOME`, and `APP_URL` variables, plus the `CPANEL_API_TOKEN` secret, with the same access as deployment. `CPANEL_HEALTH_PATH` is optional. It uses the same concurrency group as deployment.
 
-## Publishing order
+## Rollout order
 
-1. Copy the changed `scripts/deploy_cpanel.py`, `scripts/cpanel_release_manager.php`, tests, and both reusable workflow files from this local toolkit to `A1-CM/.github`.
-2. Run its unit tests and a staging cPanel deployment/rollback. Confirm the staging site, retained releases, ZIP cleanup, and preservation of addon-domain files.
-3. Publish immutable toolkit tag `v1.0.8` after staging passes.
-4. Publish this repository's `.github/workflows/deploy-cpanel.yml` and `.github/workflows/rollback-cpanel.yml`, both pinned to `v1.0.8`.
+1. Run the toolkit unit tests and, where a staging cPanel account is available, a deployment and rollback. Confirm retained releases, ZIP cleanup, and preservation of addon-domain files.
+2. Publish toolkit tag `v1.0.8` and then publish the LogicStrand deploy and rollback callers pinned to it.
 
-The LogicStrand workflow files are prepared locally now but must be published only after the toolkit tag exists. The deployment history is private and file permissions are restricted. A missing or corrupt history file stops manual rollback rather than guessing a release. The first updated deployment can import complete legacy releases before it writes history. The cPanel API token and generated application credentials are never printed in workflow output.
+The deployment history is private and file permissions are restricted. A missing or corrupt history file stops manual rollback rather than guessing a release. The first updated deployment can import complete legacy releases before it writes history. The cPanel API token and generated application credentials are never printed in workflow output.

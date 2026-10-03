@@ -374,7 +374,8 @@ def provision(base: str, user: str, token: str, state: dict) -> None:
         })
 
 
-def manager_call(base: str, user: str, api_token: str, config: dict, sensitive: tuple[str, ...] = ()) -> dict:
+def manager_call(base: str, user: str, api_token: str, config: dict, sensitive: tuple[str, ...] = (),
+                 manager_script: str = "scripts/cpanel_release_manager.php") -> dict:
     """Run one authenticated, self-removing PHP operation in the document root."""
     project, home, public = config["project"], config["home"], config["public"]
     nonce = secrets.token_hex(12)
@@ -385,7 +386,7 @@ def manager_call(base: str, user: str, api_token: str, config: dict, sensitive: 
     config = {**config, "token_file": token_path}
     upload(base, user, api_token, home, token_name,
            ("<?php return " + repr_php(hook_token) + ";\n").encode())
-    template = (TOOLKIT_ROOT / "scripts/cpanel_release_manager.php").read_text()
+    template = (TOOLKIT_ROOT / manager_script).read_text()
     upload(base, user, api_token, public, hook_name,
            template.replace("__CONFIG__", php_array(config)).encode())
     try:
@@ -415,9 +416,10 @@ def manager_call(base: str, user: str, api_token: str, config: dict, sensitive: 
     return answer
 
 
-def health_check(site_url: str) -> None:
-    path = os.environ.get("CPANEL_HEALTH_PATH") or "/up"
-    if not re.fullmatch(r"/[A-Za-z0-9/_-]*", path) or "//" in path or "/../" in path:
+def health_check(site_url: str, path: str | None = None) -> None:
+    path = path or os.environ.get("CPANEL_HEALTH_PATH") or "/up"
+    if (not re.fullmatch(r"/[A-Za-z0-9/_.-]*", path) or "//" in path or
+            any(part in (".", "..") for part in path.split("/"))):
         raise ValueError("CPANEL_HEALTH_PATH must be a simple absolute path")
     url = site_url + path
     for attempt in range(3):
@@ -434,12 +436,13 @@ def health_check(site_url: str) -> None:
 
 
 def finalize_or_recover(base: str, user: str, token: str, config: dict,
-                        sensitive: tuple[str, ...] = ()) -> dict:
+                        sensitive: tuple[str, ...] = (),
+                        manager_script: str = "scripts/cpanel_release_manager.php") -> dict:
     try:
-        return manager_call(base, user, token, {**config, "action": "finalize"}, sensitive)
+        return manager_call(base, user, token, {**config, "action": "finalize"}, sensitive, manager_script)
     except Exception as error:
         try:
-            recovery = manager_call(base, user, token, {**config, "action": "restore"}, sensitive)
+            recovery = manager_call(base, user, token, {**config, "action": "restore"}, sensitive, manager_script)
         except Exception as recovery_error:
             raise RuntimeError(f"Finalization failed and recovery status is unknown: {recovery_error}") from error
         if recovery.get("finalized"):
