@@ -377,15 +377,41 @@ def main() -> None:
     upload(base, user, token, public, hook_name, hook.encode())
     hook_url = site_url + "/" + hook_name
     try:
-        raw = request(hook_url, data=b"activate=1", headers={
-            "X-LogicStrand-Deploy-Token": hook_token,
-            "Content-Type": "application/x-www-form-urlencoded",
-        })
-        answer = json.loads(raw)
-        if not answer.get("ok"):
-            raise RuntimeError("Activation failed: " + str(answer.get("error", "unknown error")))
+        response = requests.post(
+            hook_url,
+            data={"activate": "1"},
+            headers={"X-LogicStrand-Deploy-Token": hook_token},
+            timeout=180,
+            verify=True,
+        )
+        try:
+            answer = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Activation returned HTTP {response.status_code} without a JSON response"
+            ) from exc
+        if not isinstance(answer, dict):
+            raise RuntimeError(
+                f"Activation returned HTTP {response.status_code} with an invalid JSON response"
+            )
+        if not response.ok or not answer.get("ok"):
+            detail = str(answer.get("error") or "unknown error")
+            for secret in (
+                token, hook_token, state["db_password"], state["mail_password"],
+                state["app_key"], os.environ.get("GROQ_API_KEY", ""),
+            ):
+                if secret:
+                    detail = detail.replace(secret, "[redacted]")
+            detail = detail.replace(home, "[CPANEL_HOME]")
+            detail = " ".join(detail.split())[:300]
+            raise RuntimeError(f"Activation HTTP {response.status_code}: {detail}")
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f"Activation request failed: {type(exc).__name__}") from exc
     except Exception:
-        print("Activation did not complete. The temporary endpoint remains protected by its random name and token.", file=sys.stderr)
+        print(
+            "Activation did not complete. Check the public directory for a temporary activation PHP file.",
+            file=sys.stderr,
+        )
         raise
     print(f"Activated {release} at {site_url}")
 
