@@ -26,8 +26,12 @@ on:
         description: Permit replacement of an unrelated index.php in the selected document root
         default: false
         type: boolean
+      health_path:
+        description: Path that must return HTTP 200 after activation; defaults to Laravel /up
+        default: /up
+        type: string
       toolkit_repository:
-        description: Repository holding scripts/deploy_cpanel.py and scripts/cpanel_activate.php; defaults to caller repository
+        description: Repository holding the cPanel deployment scripts; defaults to caller repository
         required: false
         type: string
       toolkit_ref:
@@ -114,6 +118,7 @@ jobs:
           CPANEL_DOMAIN: ${{ inputs.cpanel_domain }}
           CPANEL_PUBLIC_DIR: ${{ inputs.public_dir }}
           CPANEL_ALLOW_INDEX_REPLACE: ${{ inputs.allow_index_replace }}
+          CPANEL_HEALTH_PATH: ${{ inputs.health_path }}
           CPANEL_DB_NAME: ${{ vars.CPANEL_DB_NAME }}
           CPANEL_DB_USER: ${{ vars.CPANEL_DB_USER }}
           DB_HOST: ${{ vars.DB_HOST }}

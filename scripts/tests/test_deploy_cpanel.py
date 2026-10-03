@@ -11,6 +11,25 @@ from scripts import deploy_cpanel as deploy
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_nested_domain_roots_are_discovered(self):
+        payload = json.dumps({'cpanelresult': {'event': {'result': 1}, 'data': [
+            {'domain': 'main.example', 'docroot': '/home/account/public_html'},
+            {'domain': 'addon.example', 'docroot': '/home/account/public_html/addon.example'},
+            {'domain': 'other.example', 'docroot': '/home/account/other'},
+        ]}}).encode()
+        with patch.object(deploy, 'request', return_value=payload):
+            self.assertEqual(deploy.nested_domain_roots('https://cpanel:2083', 'account', 'token',
+                                                        '/home/account/public_html'), ['addon.example'])
+
+    def test_health_check_requires_http_200(self):
+        with patch.object(deploy.requests, 'get', return_value=type('Response', (), {'status_code': 200})()) as get:
+            deploy.health_check('https://example.com')
+            self.assertFalse(get.call_args.kwargs['allow_redirects'])
+        with patch.object(deploy.requests, 'get', return_value=type('Response', (), {'status_code': 503})()), \
+             patch.object(deploy.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'Health check failed'):
+                deploy.health_check('https://example.com')
+
     def test_generated_env_preserves_special_password_characters(self):
         password = 'a${APP_NAME}$b"\\tail#'
         with tempfile.TemporaryDirectory() as temp:

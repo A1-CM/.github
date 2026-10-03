@@ -1,0 +1,68 @@
+name: Reusable Laravel cPanel rollback
+
+on:
+  workflow_call:
+    inputs:
+      project_slug:
+        required: true
+        type: string
+      app_url:
+        required: true
+        type: string
+      steps_back:
+        description: Prior activated release to restore, from 1 to 7
+        required: true
+        type: number
+      public_dir:
+        default: auto
+        type: string
+      cpanel_domain:
+        required: false
+        type: string
+      health_path:
+        default: /up
+        type: string
+      toolkit_repository:
+        required: false
+        type: string
+      toolkit_ref:
+        default: main
+        type: string
+    secrets:
+      CPANEL_API_TOKEN:
+        required: true
+      TOOLKIT_READ_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: cpanel-${{ inputs.project_slug }}-${{ inputs.app_url }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out deployment toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.toolkit_repository || github.repository }}
+          ref: ${{ inputs.toolkit_repository && inputs.toolkit_ref || github.sha }}
+          token: ${{ secrets.TOOLKIT_READ_TOKEN || github.token }}
+          path: toolkit
+      - name: Install rollback client
+        run: python3 -m pip install requests
+      - name: Restore retained release
+        env:
+          CPANEL_HOST: ${{ vars.CPANEL_HOST }}
+          CPANEL_USERNAME: ${{ vars.CPANEL_USERNAME }}
+          CPANEL_HOME: ${{ vars.CPANEL_HOME }}
+          CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
+          PROJECT_SLUG: ${{ inputs.project_slug }}
+          APP_URL: ${{ inputs.app_url }}
+          CPANEL_DOMAIN: ${{ inputs.cpanel_domain }}
+          CPANEL_PUBLIC_DIR: ${{ inputs.public_dir }}
+          CPANEL_HEALTH_PATH: ${{ inputs.health_path }}
+        run: python3 toolkit/scripts/deploy_cpanel.py --rollback ${{ inputs.steps_back }}

@@ -2,6 +2,7 @@
 """Package and activate a Laravel app on cPanel without SSH or deleting remote folders."""
 from __future__ import annotations
 
+import argparse
 import base64
 import hashlib
 import io
@@ -11,6 +12,7 @@ import re
 import secrets
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import requests
@@ -242,6 +244,29 @@ def discover_public(base: str, user: str, token: str, home: str, domain: str, pr
     return safe_public_dir(home, root[len(home.rstrip("/")) + 1:], project)
 
 
+def nested_domain_roots(base: str, user: str, token: str, public: str) -> list[str]:
+    """Find other domains whose document roots sit inside this site's root."""
+    query = urllib.parse.urlencode({
+        "cpanel_jsonapi_user": user, "cpanel_jsonapi_apiversion": "2",
+        "cpanel_jsonapi_module": "DomainLookup", "cpanel_jsonapi_func": "getdocroots",
+    })
+    raw = request(base + "/json-api/cpanel?" + query,
+                  headers={"Authorization": f"cpanel {user}:{token}"})
+    result = json.loads(raw).get("cpanelresult", {})
+    data = result.get("data")
+    if result.get("event", {}).get("result") != 1 or not isinstance(data, list):
+        raise RuntimeError("Could not verify other cPanel document roots")
+    prefix = public.rstrip("/") + "/"
+    roots = set()
+    for entry in data:
+        if not isinstance(entry, dict) or not isinstance(entry.get("docroot"), str):
+            raise RuntimeError("Invalid cPanel document-root listing")
+        root = entry["docroot"].rstrip("/")
+        if root.startswith(prefix):
+            roots.add(root[len(prefix):])
+    return sorted(roots)
+
+
 def database_names(base: str, user: str, token: str, project: str) -> tuple[str, str]:
     restrictions = uapi(base, user, token, "Mysql", "get_restrictions")
     if not isinstance(restrictions, dict):
@@ -349,7 +374,71 @@ def provision(base: str, user: str, token: str, state: dict) -> None:
         })
 
 
+def manager_call(base: str, user: str, api_token: str, config: dict, sensitive: tuple[str, ...] = ()) -> dict:
+    """Run one authenticated, self-removing PHP operation in the document root."""
+    project, home, public = config["project"], config["home"], config["public"]
+    nonce = secrets.token_hex(12)
+    hook_token = secrets.token_urlsafe(48)
+    token_name = project + "-deploy-token-" + nonce + ".php"
+    hook_name = "_" + project + "_manage_" + nonce + ".php"
+    token_path = home + "/" + token_name
+    config = {**config, "token_file": token_path}
+    upload(base, user, api_token, home, token_name,
+           ("<?php return " + repr_php(hook_token) + ";\n").encode())
+    template = (TOOLKIT_ROOT / "scripts/cpanel_release_manager.php").read_text()
+    upload(base, user, api_token, public, hook_name,
+           template.replace("__CONFIG__", php_array(config)).encode())
+    try:
+        response = requests.post(config["app_url"] + "/" + hook_name,
+                                 data={"run": "1"},
+                                 headers={"X-LogicStrand-Deploy-Token": hook_token},
+                                 timeout=180, verify=True)
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f"{config['action']} request failed: {type(exc).__name__}") from exc
+    try:
+        answer = response.json()
+    except ValueError as exc:
+        content_type = response.headers.get("Content-Type", "unknown").split(";", 1)[0]
+        raise RuntimeError(
+            f"{config['action']} returned HTTP {response.status_code} without JSON "
+            f"(content-type={content_type}, body-bytes={len(response.content)})"
+        ) from exc
+    if not isinstance(answer, dict):
+        raise RuntimeError(f"{config['action']} returned invalid JSON")
+    if not response.ok or not answer.get("ok"):
+        detail = str(answer.get("error") or "unknown error")
+        for secret in (api_token, hook_token, os.environ.get("GROQ_API_KEY", ""), *sensitive):
+            if secret:
+                detail = detail.replace(secret, "[redacted]")
+        detail = " ".join(detail.replace(home, "[CPANEL_HOME]").split())[:300]
+        raise RuntimeError(f"{config['action']} HTTP {response.status_code}: {detail}")
+    return answer
+
+
+def health_check(site_url: str) -> None:
+    path = os.environ.get("CPANEL_HEALTH_PATH") or "/up"
+    if not re.fullmatch(r"/[A-Za-z0-9/_-]*", path) or "//" in path or "/../" in path:
+        raise ValueError("CPANEL_HEALTH_PATH must be a simple absolute path")
+    url = site_url + path
+    for attempt in range(3):
+        try:
+            response = requests.get(url, params={"deploy_check": secrets.token_hex(6)},
+                                    headers={"Cache-Control": "no-cache"}, timeout=15, verify=True, allow_redirects=False)
+            if response.status_code == 200:
+                return
+        except requests.exceptions.RequestException:
+            pass
+        if attempt < 2:
+            time.sleep(5)
+    raise RuntimeError(f"Health check failed at {path}")
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Deploy or roll back a Laravel release via cPanel")
+    parser.add_argument("--rollback", type=int, metavar="STEPS", help="roll back 1-7 prior activations")
+    args = parser.parse_args()
+    if args.rollback is not None and not 1 <= args.rollback <= 7:
+        raise ValueError("--rollback must be between 1 and 7")
     host = required("CPANEL_HOST")
     if not re.fullmatch(r"[a-zA-Z0-9.-]+", host):
         raise ValueError("CPANEL_HOST must be a hostname without scheme or port")
@@ -365,16 +454,44 @@ def main() -> None:
     domain = (os.environ.get("CPANEL_DOMAIN") or parsed.hostname).lower()
     if not re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", domain):
         raise ValueError("CPANEL_DOMAIN must be a valid hosted domain")
-    release = (os.environ.get("GITHUB_SHA", "local")[:12] + "-" + os.environ.get("GITHUB_RUN_ID", "manual") + "-" + os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
-    if not re.fullmatch(r"[a-zA-Z0-9-]+", release):
-        raise ValueError("Invalid release ID")
     base = f"https://{host}:2083"
     selected = os.environ.get("CPANEL_PUBLIC_DIR", "auto").strip()
     if selected in ("", "auto"):
-        print(f"Checking cPanel API and discovering document root for {domain}", flush=True)
+        print(f"Discovering document root for {domain}", flush=True)
         public = discover_public(base, user, token, home, domain, project)
     else:
         public = safe_public_dir(home, selected, project)
+    protected_roots = nested_domain_roots(base, user, token, public)
+    operation = secrets.token_hex(12)
+    common = {
+        "home": home, "public": public, "project": project, "domain": domain,
+        "app_url": site_url, "operation": operation,
+        "protected_roots_json": json.dumps(protected_roots),
+        "allow_index_replace": os.environ.get("CPANEL_ALLOW_INDEX_REPLACE", "false").lower() == "true",
+    }
+    if args.rollback is not None:
+        print(f"Switching to retained release {args.rollback} step(s) back", flush=True)
+        try:
+            answer = manager_call(base, user, token, {**common, "action": "rollback", "release": "",
+                                                       "steps_back": args.rollback})
+            health_check(site_url)
+        except Exception as error:
+            try:
+                manager_call(base, user, token, {**common, "action": "restore", "release": ""})
+            except Exception as restore_error:
+                raise RuntimeError(f"Rollback failed and recovery also failed: {restore_error}") from error
+            raise
+        result = manager_call(base, user, token, {**common, "action": "finalize", "release": ""})
+        print(f"Rolled back to {answer['release']} at {site_url}")
+        for warning in result.get("warnings", []):
+            print(f"Cleanup warning: {warning}", file=sys.stderr)
+        return
+
+    release = (os.environ.get("GITHUB_SHA", "local")[:12] + "-" +
+               os.environ.get("GITHUB_RUN_ID", "manual") + "-" +
+               os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
+    if not re.fullmatch(r"[a-f0-9]{12}-[0-9]+-[0-9]+", release):
+        raise ValueError("Invalid release ID; deployment requires a GitHub SHA and run ID")
     release_path = home + f"/{project}-app/releases/" + release
     shared = home + f"/{project}-app/shared"
     archive = make_archive(release, shared, project)
@@ -384,75 +501,33 @@ def main() -> None:
             raise RuntimeError("Build archive is missing vendor/autoload.php")
     state = prepare_state(base, user, token, home, project, domain)
     provision(base, user, token, state)
-    hook_token = secrets.token_urlsafe(48)
-    hook_name = "_" + project + "_activate_" + secrets.token_hex(12) + ".php"
     archive_name = project + "-" + release + ".zip"
     production_env = build_env(shared, domain, state)
-    print(f"Uploading release {release} ({len(archive) // 1024 // 1024} MiB) to private home directory")
+    print(f"Uploading release {release} ({len(archive) // 1024 // 1024} MiB)", flush=True)
     upload(base, user, token, home, archive_name, archive)
-    print("Extracting release through cPanel File Manager API")
     extract(base, user, token, archive_name, home)
-    print("Verifying Composer autoloader in extracted release")
     verify_remote_autoload(base, user, token, release_path)
-    print("Uploading private production configuration")
     upload(base, user, token, release_path, ".env", production_env.encode())
-    upload(base, user, token, release_path, "deploy_auth.php", ("<?php return " + repr_php(hook_token) + ";\n").encode())
-    template = (TOOLKIT_ROOT / "scripts/cpanel_activate.php").read_text()
-    config = {
-        "release": release_path, "shared": shared, "public": public,
-        "app_url": site_url, "project": project, "allow_index_replace": os.environ.get("CPANEL_ALLOW_INDEX_REPLACE", "false").lower() == "true",
-    }
-    hook = template.replace("__CONFIG__", php_array(config))
-    print("Uploading protected activation endpoint")
-    upload(base, user, token, public, hook_name, hook.encode())
-    hook_url = site_url + "/" + hook_name
+    common["release"] = release
+    sensitive = (state["db_password"], state["mail_password"], state["app_key"])
     try:
-        response = requests.post(
-            hook_url,
-            data={"activate": "1"},
-            headers={"X-LogicStrand-Deploy-Token": hook_token},
-            timeout=180,
-            verify=True,
-        )
+        print("Activating release and checking site health", flush=True)
+        manager_call(base, user, token, {**common, "action": "activate"}, sensitive)
+        health_check(site_url)
+    except Exception as error:
         try:
-            answer = response.json()
-        except ValueError as exc:
-            content_type = response.headers.get("Content-Type", "unknown").split(";", 1)[0]
-            server = response.headers.get("Server", "unknown")
-            ray = response.headers.get("CF-Ray", "none")
-            raise RuntimeError(
-                f"Activation returned HTTP {response.status_code} without JSON "
-                f"(content-type={content_type}, server={server}, "
-                f"cf-ray={ray}, body-bytes={len(response.content)})"
-            ) from exc
-        if not isinstance(answer, dict):
-            raise RuntimeError(
-                f"Activation returned HTTP {response.status_code} with an invalid JSON response"
-            )
-        if not response.ok or not answer.get("ok"):
-            detail = str(answer.get("error") or "unknown error")
-            for secret in (
-                token, hook_token, state["db_password"], state["mail_password"],
-                state["app_key"], os.environ.get("GROQ_API_KEY", ""),
-            ):
-                if secret:
-                    detail = detail.replace(secret, "[redacted]")
-            detail = detail.replace(home, "[CPANEL_HOME]")
-            detail = " ".join(detail.split())[:300]
-            raise RuntimeError(f"Activation HTTP {response.status_code}: {detail}")
-    except requests.exceptions.RequestException as exc:
-        raise RuntimeError(f"Activation request failed: {type(exc).__name__}") from exc
-    except Exception:
-        print(
-            "Activation did not complete. Check the public directory for a temporary activation PHP file.",
-            file=sys.stderr,
-        )
+            manager_call(base, user, token, {**common, "action": "restore"}, sensitive)
+        except Exception as restore_error:
+            raise RuntimeError(f"Deployment failed and recovery also failed: {restore_error}") from error
         raise
+    result = manager_call(base, user, token, {**common, "action": "finalize"}, sensitive)
     print(f"Activated {release} at {site_url}")
+    for warning in result.get("warnings", []):
+        print(f"Cleanup warning: {warning}", file=sys.stderr)
 
 
 def php_array(data: dict) -> str:
-    items = [repr_php(key) + " => " + ("true" if value is True else "false" if value is False else repr_php(value)) for key, value in data.items()]
+    items = [repr_php(key) + " => " + ("true" if value is True else "false" if value is False else str(value) if isinstance(value, int) else repr_php(value)) for key, value in data.items()]
     return "[" + ", ".join(items) + "]"
 
 
