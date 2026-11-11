@@ -25,6 +25,9 @@ try {
     checkConfig($config);
     $lockPath = $config['home'].'/'.$config['project'].'-app/deploy.lock';
     $lock = @fopen($lockPath, 'r');
+    if ($lock === false && !file_exists($lockPath)) {
+        $lock = @fopen($lockPath, 'c');
+    }
     if ($lock === false) {
         $deploymentDiagnostics = logDeploymentFilesystemFailure('lock_open', $lockPath, error_get_last());
         throw new RuntimeException('Cannot lock deployment state');
