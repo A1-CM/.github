@@ -23,7 +23,7 @@ try {
     $authenticated = true;
     checkConfig($config);
     $lockPath = $config['home'].'/'.$config['project'].'-app/deploy.lock';
-    $lock = @fopen($lockPath, 'c');
+    $lock = @fopen($lockPath, 'r');
     if ($lock === false) {
         logDeploymentFilesystemFailure('lock_open', $lockPath, error_get_last());
         throw new RuntimeException('Cannot lock deployment state');
