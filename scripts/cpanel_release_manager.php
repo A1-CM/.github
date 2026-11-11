@@ -47,7 +47,12 @@ try {
     if (http_response_code() !== 403) {
         http_response_code(500);
     }
-catch response
+    error_log('Managed Laravel deployment: '.$error->getMessage());
+    $response = ['ok' => false, 'error' => $authenticated ? $error->getMessage() : 'Forbidden'];
+    if (is_array($deploymentDiagnostics)) {
+        $response['diagnostics'] = $deploymentDiagnostics;
+    }
+    echo json_encode($response, JSON_INVALID_UTF8_SUBSTITUTE);
 } finally {
     if (is_resource($lock)) {
         flock($lock, LOCK_UN);
