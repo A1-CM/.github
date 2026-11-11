@@ -418,11 +418,28 @@ def manager_call(base: str, user: str, api_token: str, config: dict, sensitive: 
         answer = response.json()
     except ValueError as exc:
         content_type = response.headers.get("Content-Type", "unknown").split(";", 1)[0]
-non-json response
+        body = response.content.decode("utf-8", errors="replace")
+        for secret in (api_token, hook_token, os.environ.get("GROQ_API_KEY", ""), *sensitive):
+            if secret:
+                body = body.replace(secret, "[redacted]")
+        body = " ".join(body.replace(home, "[CPANEL_HOME]").split())[:800]
+        body_detail = f", response={body!r}" if body else ""
+        raise RuntimeError(
+            f"{config['action']} returned HTTP {response.status_code} without JSON "
+            f"(content-type={content_type}, body-bytes={len(response.content)}{body_detail})"
+        ) from exc
     if not isinstance(answer, dict):
         raise RuntimeError(f"{config['action']} returned invalid JSON")
     if not response.ok or not answer.get("ok"):
-json response diagnostics
+        detail = str(answer.get("error") or "unknown error")
+        diagnostics = answer.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            detail += " | server diagnostics: " + json.dumps(diagnostics, sort_keys=True, separators=(",", ":"))
+        for secret in (api_token, hook_token, os.environ.get("GROQ_API_KEY", ""), *sensitive):
+            if secret:
+                detail = detail.replace(secret, "[redacted]")
+        detail = " ".join(detail.replace(home, "[CPANEL_HOME]").split())[:1200]
+        raise RuntimeError(f"{config['action']} HTTP {response.status_code}: {detail}")
     return answer
 
 
