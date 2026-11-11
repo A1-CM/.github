@@ -10,6 +10,7 @@ header('Cache-Control: no-store');
 
 $authenticated = false;
 $lock = null;
+$deploymentDiagnostics = null;
 try {
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
         throw new RuntimeException('Method not allowed');
@@ -23,13 +24,13 @@ try {
     $authenticated = true;
     checkConfig($config);
     $lockPath = $config['home'].'/'.$config['project'].'-app/deploy.lock';
-    $lock = @fopen($lockPath, 'c');
+    $lock = @fopen($lockPath, 'r');
     if ($lock === false) {
-        logDeploymentFilesystemFailure('lock_open', $lockPath, error_get_last());
+        $deploymentDiagnostics = logDeploymentFilesystemFailure('lock_open', $lockPath, error_get_last());
         throw new RuntimeException('Cannot lock deployment state');
     }
     if (!@flock($lock, LOCK_EX)) {
-        logDeploymentFilesystemFailure('lock_acquire', $lockPath, error_get_last());
+        $deploymentDiagnostics = logDeploymentFilesystemFailure('lock_acquire', $lockPath, error_get_last());
         fclose($lock);
         $lock = null;
         throw new RuntimeException('Cannot lock deployment state');
@@ -47,7 +48,11 @@ try {
         http_response_code(500);
     }
     error_log('Managed Laravel deployment: '.$error->getMessage());
-    echo json_encode(['ok' => false, 'error' => $authenticated ? $error->getMessage() : 'Forbidden']);
+    $response = ['ok' => false, 'error' => $authenticated ? $error->getMessage() : 'Forbidden'];
+    if (is_array($deploymentDiagnostics)) {
+        $response['diagnostics'] = $deploymentDiagnostics;
+    }
+    echo json_encode($response, JSON_INVALID_UTF8_SUBSTITUTE);
 } finally {
     if (is_resource($lock)) {
         flock($lock, LOCK_UN);
@@ -60,7 +65,7 @@ try {
     }
 }
 
-function logDeploymentFilesystemFailure(string $operation, string $path, ?array $lastError): void
+function logDeploymentFilesystemFailure(string $operation, string $path, ?array $lastError): array
 {
     try {
         $parent = dirname($path);
@@ -88,7 +93,7 @@ function logDeploymentFilesystemFailure(string $operation, string $path, ?array 
         if (function_exists('posix_getegid')) {
             $identity['effective_gid'] = posix_getegid();
         }
-        error_log('Managed Laravel deployment filesystem failure: '.json_encode([
+        $diagnostics = [
             'operation' => $operation,
             'php_version' => PHP_VERSION,
             'sapi' => PHP_SAPI,
@@ -97,9 +102,15 @@ function logDeploymentFilesystemFailure(string $operation, string $path, ?array 
             'path' => $metadata($path),
             'parent' => $metadata($parent),
             'php_error' => is_array($lastError) ? ($lastError['message'] ?? null) : null,
-        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+        ];
+        error_log('Managed Laravel deployment filesystem failure: '.json_encode(
+            $diagnostics,
+            JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
+        ));
+        return $diagnostics;
     } catch (Throwable $diagnosticError) {
         error_log('Managed Laravel deployment filesystem diagnostics failed: '.$diagnosticError->getMessage());
+        return ['diagnostics_error' => $diagnosticError->getMessage()];
     }
 }
 
