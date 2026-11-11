@@ -373,7 +373,11 @@ function runMigrations(array $config, string $target): void
         'framework/testing', 'framework/views', 'logs'] as $directory) {
         $destination = sharedRoot($config).'/storage/'.$directory;
         if (!is_dir($destination) && !mkdir($destination, 0755, true) && !is_dir($destination)) {
-            throw new RuntimeException('Cannot create shared storage');
+            $diagnostics = logDeploymentFilesystemFailure('shared_storage_create', $destination, error_get_last());
+            throw new RuntimeException('Cannot create shared storage: '.json_encode(
+                $diagnostics,
+                JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
+            ));
         }
     }
     require_once $path.'/vendor/autoload.php';
