@@ -418,19 +418,11 @@ def manager_call(base: str, user: str, api_token: str, config: dict, sensitive: 
         answer = response.json()
     except ValueError as exc:
         content_type = response.headers.get("Content-Type", "unknown").split(";", 1)[0]
-        raise RuntimeError(
-            f"{config['action']} returned HTTP {response.status_code} without JSON "
-            f"(content-type={content_type}, body-bytes={len(response.content)})"
-        ) from exc
+non-json response
     if not isinstance(answer, dict):
         raise RuntimeError(f"{config['action']} returned invalid JSON")
     if not response.ok or not answer.get("ok"):
-        detail = str(answer.get("error") or "unknown error")
-        for secret in (api_token, hook_token, os.environ.get("GROQ_API_KEY", ""), *sensitive):
-            if secret:
-                detail = detail.replace(secret, "[redacted]")
-        detail = " ".join(detail.replace(home, "[CPANEL_HOME]").split())[:300]
-        raise RuntimeError(f"{config['action']} HTTP {response.status_code}: {detail}")
+json response diagnostics
     return answer
 
 
