@@ -22,8 +22,16 @@ try {
     }
     $authenticated = true;
     checkConfig($config);
-    $lock = fopen($config['home'].'/'.$config['project'].'-app/deploy.lock', 'c');
-    if ($lock === false || !flock($lock, LOCK_EX)) {
+    $lockPath = $config['home'].'/'.$config['project'].'-app/deploy.lock';
+    $lock = @fopen($lockPath, 'c');
+    if ($lock === false) {
+        logDeploymentFilesystemFailure('lock_open', $lockPath, error_get_last());
+        throw new RuntimeException('Cannot lock deployment state');
+    }
+    if (!@flock($lock, LOCK_EX)) {
+        logDeploymentFilesystemFailure('lock_acquire', $lockPath, error_get_last());
+        fclose($lock);
+        $lock = null;
         throw new RuntimeException('Cannot lock deployment state');
     }
     $result = match ($config['action']) {
@@ -45,8 +53,54 @@ try {
         flock($lock, LOCK_UN);
         fclose($lock);
     }
-    @unlink($config['token_file']);
-    @unlink(__FILE__);
+    foreach ([$config['token_file'], __FILE__] as $temporaryPath) {
+        if (!@unlink($temporaryPath) && file_exists($temporaryPath)) {
+            logDeploymentFilesystemFailure('temporary_file_cleanup', $temporaryPath, error_get_last());
+        }
+    }
+}
+
+function logDeploymentFilesystemFailure(string $operation, string $path, ?array $lastError): void
+{
+    try {
+        $parent = dirname($path);
+        $metadata = static function (string $target): array {
+            $stat = @stat($target);
+            $mode = is_array($stat) ? ($stat['mode'] & 0777) : null;
+            return [
+                'path' => $target,
+                'exists' => file_exists($target),
+                'directory' => is_dir($target),
+                'writable' => is_writable($target),
+                'mode' => $mode === null ? null : sprintf('%04o', $mode),
+                'owner_uid' => is_array($stat) ? $stat['uid'] : null,
+                'group_gid' => is_array($stat) ? $stat['gid'] : null,
+            ];
+        };
+        $identity = [];
+        if (function_exists('posix_geteuid')) {
+            $identity['effective_uid'] = posix_geteuid();
+            if (function_exists('posix_getpwuid')) {
+                $account = posix_getpwuid($identity['effective_uid']);
+                $identity['effective_user'] = is_array($account) ? ($account['name'] ?? null) : null;
+            }
+        }
+        if (function_exists('posix_getegid')) {
+            $identity['effective_gid'] = posix_getegid();
+        }
+        error_log('Managed Laravel deployment filesystem failure: '.json_encode([
+            'operation' => $operation,
+            'php_version' => PHP_VERSION,
+            'sapi' => PHP_SAPI,
+            'open_basedir' => ini_get('open_basedir'),
+            'identity' => $identity,
+            'path' => $metadata($path),
+            'parent' => $metadata($parent),
+            'php_error' => is_array($lastError) ? ($lastError['message'] ?? null) : null,
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+    } catch (Throwable $diagnosticError) {
+        error_log('Managed Laravel deployment filesystem diagnostics failed: '.$diagnosticError->getMessage());
+    }
 }
 
 function checkConfig(array $config): void
