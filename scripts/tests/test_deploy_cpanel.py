@@ -134,9 +134,13 @@ class DeploymentTests(unittest.TestCase):
             deploy.provision('https://cpanel:2083', 'account', 'token', state)
             upload.assert_called_once()
             self.assertEqual(chmod.call_count, 2)
-            with patch.dict(os.environ, {'APP_URL': 'https://example.com', 'PROJECT_NAME': 'LogicStrand'}, clear=True):
+            with patch.dict(os.environ, {'APP_URL': 'https://example.com', 'PROJECT_NAME': 'LogicStrand', 'MAIL_HOST': 'smtp.shared.example'}, clear=True):
                 env = deploy.build_env('/home/account/logicstrand-app/shared', 'example.com', state)
             self.assertIn('DB_HOST="localhost"', env)
+            self.assertIn('MAIL_HOST="smtp.shared.example"', env)
+            with patch.dict(os.environ, {'APP_URL': 'https://example.com', 'MAIL_HOST': ''}, clear=True):
+                with self.assertRaisesRegex(ValueError, 'Missing MAIL_HOST'):
+                    deploy.build_env('/home/account/logicstrand-app/shared', 'example.com', state)
             self.assertIn('DB_PASSWORD=' + deploy.env_value(state['db_password']), env)
             self.assertIn('MAIL_PASSWORD=' + deploy.env_value(state['mail_password']), env)
             self.assertIn('APP_KEY=' + deploy.env_value(state['app_key']), env)

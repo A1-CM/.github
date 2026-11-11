@@ -70,7 +70,7 @@ def build_env(shared: str, domain: str, state: dict) -> str:
         "CACHE_STORE": "database", "SESSION_DRIVER": "database", "QUEUE_CONNECTION": "sync",
         "FILESYSTEM_DISK": "local",
         "MAIL_MAILER": "smtp", "MAIL_SCHEME": os.environ.get("MAIL_SCHEME") or "smtps",
-        "MAIL_HOST": os.environ.get("MAIL_HOST") or "mail." + domain,
+        "MAIL_HOST": required("MAIL_HOST"),
         "MAIL_PORT": os.environ.get("MAIL_PORT") or "465",
         "MAIL_USERNAME": "no-reply@" + domain,
         "MAIL_PASSWORD": state["mail_password"],

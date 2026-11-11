@@ -41,6 +41,8 @@ on:
     secrets:
       CPANEL_API_TOKEN:
         required: true
+      MAIL_HOST:
+        required: true
       TOOLKIT_READ_TOKEN:
         required: false
       GROQ_API_KEY:
@@ -123,7 +125,7 @@ jobs:
           CPANEL_DB_USER: ${{ vars.CPANEL_DB_USER }}
           DB_HOST: ${{ vars.DB_HOST }}
           DB_PORT: ${{ vars.DB_PORT }}
-          MAIL_HOST: ${{ vars.MAIL_HOST }}
+          MAIL_HOST: ${{ secrets.MAIL_HOST }}
           MAIL_PORT: ${{ vars.MAIL_PORT }}
           MAIL_SCHEME: ${{ vars.MAIL_SCHEME }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
