@@ -374,10 +374,28 @@ def provision(base: str, user: str, token: str, state: dict) -> None:
         })
 
 
+def ensure_deployment_lock(base: str, user: str, token: str, home: str, project: str) -> None:
+    """Create a readable lock file through cPanel before PHP acquires its lock."""
+    directory = home.rstrip("/") + f"/{project}-app"
+
+    def lock_exists() -> bool:
+        listing = uapi(base, user, token, "Fileman", "list_files", {
+            "dir": directory, "only_these_files": "deploy.lock", "types": "file",
+        })
+        entries = listing if isinstance(listing, list) else listing.get("files", []) if isinstance(listing, dict) else []
+        return any(isinstance(item, dict) and item.get("file") == "deploy.lock" for item in entries)
+
+    if not lock_exists():
+        upload(base, user, token, directory, "deploy.lock", b"")
+    if not lock_exists():
+        raise RuntimeError("Could not create the cPanel deployment lock file")
+
+
 def manager_call(base: str, user: str, api_token: str, config: dict, sensitive: tuple[str, ...] = (),
                  manager_script: str = "scripts/cpanel_release_manager.php") -> dict:
     """Run one authenticated, self-removing PHP operation in the document root."""
     project, home, public = config["project"], config["home"], config["public"]
+    ensure_deployment_lock(base, user, api_token, home, project)
     nonce = secrets.token_hex(12)
     hook_token = secrets.token_urlsafe(48)
     token_name = project + "-deploy-token-" + nonce + ".php"
